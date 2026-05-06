@@ -2,6 +2,11 @@
 
 Deploy a Dockerized web application on AWS using ECS Fargate, Application Load Balancer (ALB), and Terraform.
 
+## Application Repository
+
+The application code and CI/CD pipeline are in a separate repo:
+[myapp](https://github.com/markovicivan1987/myapp) — every push to `main` automatically builds, pushes to ECR, and redeploys ECS.
+
 ## Architecture
 
 ```mermaid
