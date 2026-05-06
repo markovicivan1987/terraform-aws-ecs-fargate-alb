@@ -4,34 +4,71 @@ Deploy a Dockerized web application on AWS using ECS Fargate, Application Load B
 
 ## Architecture
 
-- **ECR**: Stores Docker images.
-- **VPC, Subnets, NAT Gateway**: Networking for public/private resources.
-- **ALB**: Exposes the app to the internet.
-- **ECS Cluster, Task Definition, Service**: Runs and manages the containerized app.
+```mermaid
+flowchart TD
+    Internet([Internet])
+
+    subgraph Public Subnets
+        ALB[Application Load Balancer\nport 80 → redirect 443\nport 443 → HTTPS]
+    end
+
+    subgraph Private Subnets
+        ECS[ECS Fargate Tasks\nno public IP]
+    end
+
+    NAT[NAT Gateway]
+    ECR[ECR\nDocker Images]
+    CW[CloudWatch\nContainer Logs]
+    ACM[ACM\nSelf-Signed Cert]
+
+    Internet -->|HTTP/HTTPS| ALB
+    ALB -->|forward| ECS
+    ECS -->|pull image| ECR
+    ECS -->|stdout/stderr| CW
+    ALB -->|TLS termination| ACM
+    ECS -->|outbound traffic| NAT
+    NAT --> Internet
+```
+
+**Traffic flow:** Internet → ALB (public subnets, TLS termination) → ECS Tasks (private subnets) → ECR for image pulls, CloudWatch for logs. Outbound traffic from ECS routes through a NAT Gateway.
 
 ## Prerequisites
 
-- AWS account and credentials configured
-- Terraform installed
-- Docker installed
+- AWS account and credentials configured (`aws configure`)
+- Terraform >= 1.5
+- Docker
 
 ## Usage
 
 1. **Clone the repository**
    ```sh
-   git clone https://github.com/yourusername/terraform-aws-ecs-fargate-alb.git
+   git clone https://github.com/markovicivan1987/terraform-aws-ecs-fargate-alb.git
    cd terraform-aws-ecs-fargate-alb
+   ```
 
-2. ****Build and push your Docker image**
+2. **Deploy the infrastructure**
+   ```sh
+   terraform init
+   terraform apply
+   ```
 
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
-docker build -t myapp .
-docker tag myapp:latest <account-id>.dkr.ecr.<region>.amazonaws.com/myapp:latest
-docker push <account-id>.dkr.ecr.<region>.amazonaws.com/myapp:latest
+3. **Build and push your Docker image**
+   ```sh
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(terraform output -raw ecr_repository_url)
+   docker build -t myapp .
+   docker tag myapp:latest $(terraform output -raw ecr_repository_url):latest
+   docker push $(terraform output -raw ecr_repository_url):latest
+   ```
 
+4. **Access the application**
+   ```sh
+   terraform output alb_https_url
+   ```
+   > Note: The browser will show a security warning because the certificate is self-signed. This is expected.
 
-Notes
-ECS tasks run in private subnets; ALB is in public subnets.
-NAT Gateway allows ECS tasks outbound internet access.
-No public IPs are assigned to ECS tasks.
-HTTPS can be added later by creating an ACM certificate and a 443 listener.
+## Notes
+
+- ECS tasks run in private subnets with no public IPs; only the ALB is internet-facing.
+- NAT Gateway allows ECS tasks to pull images from ECR and reach the internet outbound.
+- Port 80 automatically redirects to HTTPS (443).
+- The private key is stored in `terraform.tfstate` — do not commit the state file.
