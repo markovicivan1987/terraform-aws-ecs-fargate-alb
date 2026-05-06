@@ -1,12 +1,13 @@
 resource "aws_ecr_repository" "myapp" {
-  name = "myapp"
+  name         = var.app_name
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
   }
 
   tags = {
-    Name = "myapp-ecr"
+    Name = "${var.app_name}-ecr"
   }
 }
 
@@ -14,7 +15,7 @@ resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 
   tags = {
-    Name = "myapp-vpc"
+    Name = "${var.app_name}-vpc"
   }
 }
 
@@ -22,7 +23,7 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "myapp-igw"
+    Name = "${var.app_name}-igw"
   }
 }
 
@@ -70,9 +71,12 @@ resource "aws_subnet" "private_2" {
   }
 }
 
-
 resource "aws_eip" "nat_eip" {
   domain = "vpc"
+
+  tags = {
+    Name = "${var.app_name}-nat-eip"
+  }
 }
 
 resource "aws_nat_gateway" "nat" {
@@ -80,7 +84,7 @@ resource "aws_nat_gateway" "nat" {
   subnet_id     = aws_subnet.public_1.id
 
   tags = {
-    Name = "myapp-nat"
+    Name = "${var.app_name}-nat"
   }
 }
 
@@ -135,8 +139,8 @@ resource "aws_route_table_association" "private_2_assoc" {
 }
 
 resource "aws_security_group" "alb_sg" {
-  name        = "alb-sg"
-  description = "Allow HTTP from internet"
+  name        = "${var.app_name}-alb-sg"
+  description = "Allow HTTP and HTTPS from internet"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -146,13 +150,12 @@ resource "aws_security_group" "alb_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-ingress {
+  ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
 
   egress {
     from_port   = 0
@@ -162,18 +165,18 @@ ingress {
   }
 
   tags = {
-    Name = "alb-sg"
+    Name = "${var.app_name}-alb-sg"
   }
 }
 
 resource "aws_security_group" "ecs_sg" {
-  name        = "ecs-sg"
+  name        = "${var.app_name}-ecs-sg"
   description = "Allow traffic from ALB only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 8080
-    to_port         = 8080
+    from_port       = var.container_port
+    to_port         = var.container_port
     protocol        = "tcp"
     security_groups = [aws_security_group.alb_sg.id]
   }
@@ -186,16 +189,20 @@ resource "aws_security_group" "ecs_sg" {
   }
 
   tags = {
-    Name = "ecs-sg"
+    Name = "${var.app_name}-ecs-sg"
   }
 }
 
 resource "aws_ecs_cluster" "myapp" {
-  name = "myapp-cluster"
+  name = "${var.app_name}-cluster"
+
+  tags = {
+    Name = "${var.app_name}-cluster"
+  }
 }
 
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecsTaskExecutionRole"
+  name = "${var.app_name}-task-execution-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -207,6 +214,10 @@ resource "aws_iam_role" "ecs_task_execution_role" {
       }
     }]
   })
+
+  tags = {
+    Name = "${var.app_name}-task-execution-role"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
@@ -215,42 +226,59 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 }
 
 resource "aws_ecs_task_definition" "myapp" {
-  family                   = "myapp-task"
+  family                   = "${var.app_name}-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"   # Minimum Fargate CPU
-  memory                   = "512"   # Minimum Fargate Memory
+  cpu                      = var.cpu
+  memory                   = var.memory
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name      = "myapp"
-      image     = "590183665491.dkr.ecr.us-east-1.amazonaws.com/myapp:latest"
+      name      = var.app_name
+      image     = "${aws_ecr_repository.myapp.repository_url}:latest"
       essential = true
       portMappings = [
         {
-          containerPort = 8080
-          hostPort      = 8080
+          containerPort = var.container_port
+          hostPort      = var.container_port
         }
       ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.ecs.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ecs"
+        }
+      }
     }
   ])
+
+  tags = {
+    Name = "${var.app_name}-task"
+  }
 }
 
 resource "aws_lb" "myapp" {
-  name               = "myapp-alb"
+  name               = "${var.app_name}-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
   subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+
+  tags = {
+    Name = "${var.app_name}-alb"
+  }
 }
 
 resource "aws_lb_target_group" "myapp" {
-  name        = "myapp-tg"
-  port        = 8080
+  name        = "${var.app_name}-tg"
+  port        = var.container_port
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+
   health_check {
     path                = "/"
     interval            = 30
@@ -258,6 +286,10 @@ resource "aws_lb_target_group" "myapp" {
     healthy_threshold   = 2
     unhealthy_threshold = 2
     matcher             = "200"
+  }
+
+  tags = {
+    Name = "${var.app_name}-tg"
   }
 }
 
@@ -267,29 +299,47 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.myapp.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate.self_signed.arn
+
+  default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.myapp.arn
   }
 }
 
 resource "aws_ecs_service" "myapp" {
-  name            = "myapp-service"
+  name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.myapp.id
   task_definition = aws_ecs_task_definition.myapp.arn
   launch_type     = "FARGATE"
-  desired_count   = 1
+  desired_count   = var.desired_count
 
   network_configuration {
-  subnets          = [aws_subnet.private_1.id, aws_subnet.private_2.id] # Private subnets
-  security_groups  = [aws_security_group.ecs_sg.id]
-  assign_public_ip = false
-}
+    subnets          = [aws_subnet.private_1.id, aws_subnet.private_2.id]
+    security_groups  = [aws_security_group.ecs_sg.id]
+    assign_public_ip = false
+  }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.myapp.arn
-    container_name   = "myapp"
-    container_port   = 8080
+    container_name   = var.app_name
+    container_port   = var.container_port
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
 }
